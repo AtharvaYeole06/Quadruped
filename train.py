@@ -83,4 +83,3 @@ model = PPO(
 
 model.learn(total_timesteps=1_000_000)
 model.save("a1_loco_transformer_ppo")
-print("Done!")

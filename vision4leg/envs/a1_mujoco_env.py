@@ -2,114 +2,122 @@ import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 import mujoco
-from vision4leg.robots.a1_mujoco import A1Mujoco, INIT_MOTOR_ANGLES, KP, KD
+from vision4leg.robots.a1_mujoco import A1Mujoco, MAX_TORQUE
 
 IMG_HEIGHT = 64
 IMG_WIDTH = 64
-STATE_DIM = 30
-VISUAL_DIM = IMG_HEIGHT * IMG_WIDTH  # flattened depth image
+STATE_DIM = 33  # 12 angles + 12 velocities + 3 RPY + 3 RPY_rate + 3 base_velocity
+VISUAL_DIM = IMG_HEIGHT * IMG_WIDTH
+
+# ── Config ──────────────────────────────────────────────────────────────────
+TARGET_VELOCITY = 0.5   # m/s
+TORQUE_SCALE = 10.0     # Policy outputs [-1,1] → [-10, 10] Nm
+MAX_EPISODE_STEPS = 1000
 
 
 class A1MujocoEnv(gym.Env):
-    """Gymnasium env for A1 locomotion with depth camera in MuJoCo."""
+    """Gymnasium env for A1 locomotion with depth camera + torque control."""
 
     def __init__(self, render_mode=None, use_depth=True):
         super().__init__()
         self.render_mode = render_mode
         self.use_depth = use_depth
-        self._robot = A1Mujoco()
+        self._robot = A1Mujoco(action_repeat=20)  # 50 Hz control
 
-        # depth camera renderer
+        # Depth camera
         if self.use_depth:
             self._renderer = mujoco.Renderer(
                 self._robot._model, height=IMG_HEIGHT, width=IMG_WIDTH
             )
             self._renderer.enable_depth_rendering()
 
-        # action: 12 torques
+        # Action: 12 normalized torques [-1, 1]
         self.action_space = spaces.Box(
-            low=-33.5, high=33.5, shape=(12,), dtype=np.float32
+            low=-1.0, high=1.0, shape=(12,), dtype=np.float32
         )
 
-        # obs: state(30) + depth(64*64) if use_depth else state(30)
+        # Obs: state(33) + depth(64×64)
         obs_dim = STATE_DIM + VISUAL_DIM if use_depth else STATE_DIM
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
         )
 
-        self._prev_pos = None
         self._last_action = None
+        self._step_count = 0
+        self._last_contacts = np.zeros(4, dtype=bool)
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self._robot.Reset()
-        self._prev_pos = self._robot.GetBasePosition().copy()
         self._last_action = np.zeros(12)
+        self._step_count = 0
+        self._last_contacts = np.zeros(4, dtype=bool)
         return self._get_obs(), {}
 
     def step(self, action):
-        self._robot.Step(action)
+        torques = action * TORQUE_SCALE
+        self._robot.Step(torques)
+
         obs = self._get_obs()
         reward = self._compute_reward(action)
         terminated = not self._robot.is_safe
-        truncated = False
-        self._prev_pos = self._robot.GetBasePosition().copy()
+
+        self._step_count += 1
+        truncated = self._step_count >= MAX_EPISODE_STEPS
+
         self._last_action = action.copy()
         return obs, reward, terminated, truncated, {}
 
     def _get_depth(self):
-        """Render depth image from robot's front camera."""
         self._renderer.update_scene(self._robot._data)
         depth = self._renderer.render()
-        # normalize to [0, 1] clipping at 5m
         depth = np.clip(depth, 0, 5.0) / 5.0
         return depth.flatten().astype(np.float32)
 
     def _get_obs(self):
-        state = np.concatenate(
-            [
-                self._robot.GetMotorAngles(),  # 12
-                self._robot.GetMotorVelocities(),  # 12
-                self._robot.GetBaseRollPitchYaw(),  # 3
-                self._robot.GetBaseRollPitchYawRate(),  # 3
-            ]
-        ).astype(np.float32)
+        state = np.concatenate([
+            self._robot.GetMotorAngles(),          # 12
+            self._robot.GetMotorVelocities(),      # 12
+            self._robot.GetBaseRollPitchYaw(),     # 3
+            self._robot.GetBaseRollPitchYawRate(),  # 3
+            self._robot.GetBaseVelocity(),          # 3 — needed for velocity tracking!
+        ]).astype(np.float32)
 
         if self.use_depth:
-            depth = self._get_depth()
-            return np.concatenate([state, depth])
+            return np.concatenate([state, self._get_depth()])
         return state
 
     def _compute_reward(self, action):
-        cur_pos = self._robot.GetBasePosition()
-
-        # forward velocity
-        forward_vel = (cur_pos[0] - self._prev_pos[0]) / self._robot.time_step
-
-        # stay upright
-        rpy = self._robot.GetTrueBaseRollPitchYaw()
-        orientation_penalty = 0.1 * (rpy[0] ** 2 + rpy[1] ** 2)
-
-        # target height ~0.27
-        height_penalty = 0.1 * abs(cur_pos[2] - 0.27)
-
-        # energy penalty
+        base_vel = self._robot.GetBaseVelocity()
+        rpy = self._robot.GetBaseRollPitchYaw()
+        rpy_rate = self._robot.GetBaseRollPitchYawRate()
         torques = self._robot.GetMotorTorques()
-        energy_penalty = 0.0001 * np.sum(torques**2)
 
-        # smoothness penalty
-        smoothness_penalty = 0.001 * np.sum((action - self._last_action) ** 2)
+        # Task reward: encourage forward velocity tracking
+        forward_vel = base_vel[0]
+        vel_error = forward_vel - TARGET_VELOCITY
+        task_reward = np.exp(-(vel_error ** 2) / 0.1)
 
-        alive = 1.0 if self._robot.is_safe else 0.0
+        # Stability penalties
+        orientation_err = rpy[0]**2 + rpy[1]**2              # Keep base flat
+        z_vel_err = base_vel[2]**2                           # Prevent bouncing
+        ang_vel_err = rpy_rate[0]**2 + rpy_rate[1]**2        # Prevent wobbling
+        
+        # Energy and smoothness penalties
+        torque_err = np.sum(torques**2)                      # Minimize energy
+        action_rate_err = np.sum((action - self._last_action) ** 2) # Smooth actions
 
-        return (
-            2.0 * forward_vel
-            + alive
-            - orientation_penalty
-            - height_penalty
-            - energy_penalty
-            - smoothness_penalty
+        penalty = (
+            1.0 * orientation_err +
+            2.0 * z_vel_err +
+            0.05 * ang_vel_err +
+            0.0002 * torque_err +
+            0.005 * action_rate_err
         )
+
+        # Bounded multiplicative reward with small survival bonus
+        reward = task_reward * np.exp(-penalty) + 0.2 
+        return float(reward)
 
     def render(self):
         pass

@@ -23,10 +23,11 @@ MOTOR_NAMES = list(JOINT_NAME_MAP.keys())
 NUM_MOTORS = 12
 INIT_POSITION = [0, 0, 0.32]
 INIT_MOTOR_ANGLES = np.array([0, 0.9, -1.8] * 4)
+MAX_TORQUE = 33.5  # A1 motor torque limit (Nm)
 
-# PD gains matching vision4leg a1.py
-KP = np.array([80.0] * 12)
-KD = np.array([0.4] * 12)
+# PD gains (used ONLY during Reset to settle into standing pose)
+_RESET_KP = np.array([80.0] * 12)
+_RESET_KD = np.array([0.4] * 12)
 
 SCENE_XML = os.path.join(
     os.path.dirname(__file__), "../assets/unitree_go1/scene_torque.xml"
@@ -34,7 +35,7 @@ SCENE_XML = os.path.join(
 
 
 class A1Mujoco:
-    """A1 quadruped simulated in MuJoCo with PD control."""
+    """A1 quadruped simulated in MuJoCo with direct torque control."""
 
     def __init__(self, time_step=0.001, action_repeat=1, on_rack=False, sensors=None):
         self.time_step = time_step
@@ -73,15 +74,6 @@ class A1Mujoco:
             ids.append(gid)
         return ids
 
-    def _ApplyPDControl(self, target_angles):
-        """Compute PD torques and write to data.ctrl."""
-        q = np.array([self._data.qpos[7 + jid] for jid in self._motor_id_list])
-        qdot = np.array([self._data.qvel[6 + jid] for jid in self._motor_id_list])
-        torques = KP * (target_angles - q) + KD * (0.0 - qdot)
-        torques = np.clip(torques, -33.5, 33.5)
-        for i, jid in enumerate(self._motor_id_list):
-            self._data.ctrl[jid] = torques[i]
-
     def Reset(self, default_motor_angles=None, reset_time=0.5):
         mujoco.mj_resetData(self._model, self._data)
 
@@ -101,9 +93,14 @@ class A1Mujoco:
 
         mujoco.mj_forward(self._model, self._data)
 
-        # settle with PD position hold
+        # Settle with PD control (only during reset, not during training)
         for _ in range(500):
-            self._ApplyPDControl(INIT_MOTOR_ANGLES)
+            q = np.array([self._data.qpos[7 + jid] for jid in self._motor_id_list])
+            qdot = np.array([self._data.qvel[6 + jid] for jid in self._motor_id_list])
+            torques = _RESET_KP * (INIT_MOTOR_ANGLES - q) + _RESET_KD * (0.0 - qdot)
+            torques = np.clip(torques, -MAX_TORQUE, MAX_TORQUE)
+            for i, jid in enumerate(self._motor_id_list):
+                self._data.ctrl[jid] = torques[i]
             mujoco.mj_step(self._model, self._data)
 
         self._is_safe = True
@@ -118,9 +115,10 @@ class A1Mujoco:
         self.ReceiveObservation()
 
     def ApplyAction(self, torques):
-        torques = np.clip(torques, -33.5, 33.5)
+        """Direct torque control — action IS the torque (already scaled by env)."""
+        clipped = np.clip(torques, -MAX_TORQUE, MAX_TORQUE)
         for i, jid in enumerate(self._motor_id_list):
-            self._data.ctrl[jid] = torques[i]
+            self._data.ctrl[jid] = clipped[i]
 
     def ReceiveObservation(self):
         self._joint_states = [
@@ -197,6 +195,7 @@ class A1Mujoco:
     @property
     def is_safe(self):
         rpy = self.GetTrueBaseRollPitchYaw()
-        if abs(rpy[0]) > 1.0 or abs(rpy[1]) > 1.0:
+        base_z = self._base_position[2]
+        if abs(rpy[0]) > 1.0 or abs(rpy[1]) > 1.0 or base_z < 0.2:
             self._is_safe = False
         return self._is_safe
