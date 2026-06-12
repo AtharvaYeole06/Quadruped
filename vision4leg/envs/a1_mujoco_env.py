@@ -70,7 +70,8 @@ class A1MujocoEnv(gym.Env):
 
         obs = self._get_obs()
         reward = self._compute_reward(action)
-        terminated = not self._robot.is_safe
+        base_height = self._robot._data.qpos[2]
+        terminated = not self._robot.is_safe or base_height < 0.20
 
         self._step_count += 1
         truncated = self._step_count >= MAX_EPISODE_STEPS

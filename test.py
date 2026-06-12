@@ -194,6 +194,13 @@ def main():
     mj_model = raw_env._robot._model
     mj_data = raw_env._robot._data
 
+    # Prevent the viewer from auto-resetting when the robot falls
+    original_step = raw_env.step
+    def patched_step(action):
+        obs, reward, terminated, truncated, info = original_step(action)
+        return obs, reward, False, False, info
+    raw_env.step = patched_step
+
     # ── Launch viewer ───────────────────────────────────────────────────────
     obs = env.reset()
     viewer = mujoco.viewer.launch_passive(mj_model, mj_data)
