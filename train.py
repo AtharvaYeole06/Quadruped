@@ -122,4 +122,4 @@ if __name__ == "__main__":
 
     model.save("a1_loco_transformer_ppo")
     env.save(VECNORM_PATH)
-    print("Training complete! Model saved.")
+    print("Training complete")
