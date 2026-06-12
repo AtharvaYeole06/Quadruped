@@ -44,70 +44,35 @@ from torchrl.networks.nets import LocoTransformer
 
 # ── Architecture (must match train.py exactly) ──────────────────────────────
 class LocoTransformerExtractor(BaseFeaturesExtractor):
+    """Wraps LocoTransformer as an SB3 features extractor."""
+
     def __init__(self, observation_space: gym.spaces.Box):
         super().__init__(observation_space, features_dim=128)
+
         self.encoder = LocoTransformerEncoder(
-            in_channels=4,
+            in_channels=4,  # depth only (4 channels)
             state_input_dim=STATE_DIM,
             hidden_shapes=[256],
             token_dim=64,
         )
+
         self.net = LocoTransformer(
             encoder=self.encoder,
             output_shape=128,
             state_input_shape=STATE_DIM,
             visual_input_shape=(4, IMG_HEIGHT, IMG_WIDTH),
-            transformer_params=[(2, 128), (2, 128)],
+            transformer_params=[(2, 64)],
             append_hidden_shapes=[128],
             add_ln=True,
-            token_norm=True,
         )
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        state = obs[:, :STATE_DIM]
-        depth_flat = obs[:, STATE_DIM:]
-        depth_img = depth_flat.view(-1, 4, IMG_HEIGHT, IMG_WIDTH)
-        visual_flat = depth_img.reshape(-1, 4 * IMG_HEIGHT * IMG_WIDTH)
-        x = torch.cat([state, visual_flat], dim=-1)
-        return self.net(x)
-
-
-# ── Frame stacking wrapper (must match train.py exactly) ────────────────────
-class DepthFrameStackWrapper(gym.Wrapper):
-    def __init__(self, env, stack_size=4):
-        super().__init__(env)
-        self.stack_size = stack_size
-        self.state_dim = STATE_DIM
-        self.frame_dim = IMG_HEIGHT * IMG_WIDTH
-        self.frames = deque(maxlen=stack_size)
-        new_size = self.state_dim + (self.stack_size * self.frame_dim)
-        self.observation_space = gym.spaces.Box(
-            low=-float("inf"),
-            high=float("inf"),
-            shape=(new_size,),
-            dtype=env.observation_space.dtype,
-        )
-
-    def _get_stacked_obs(self, orig_obs):
-        state = orig_obs[: self.state_dim]
-        current_depth = orig_obs[self.state_dim :]
-        while len(self.frames) < self.stack_size:
-            self.frames.append(current_depth)
-        return np.concatenate([state, np.concatenate(list(self.frames))])
-
-    def reset(self, **kwargs):
-        obs, info = self.env.reset(**kwargs)
-        self.frames.clear()
-        return self._get_stacked_obs(obs), info
-
-    def step(self, action):
-        obs, reward, terminated, truncated, info = self.env.step(action)
-        self.frames.append(obs[self.state_dim :])
-        return self._get_stacked_obs(obs), reward, terminated, truncated, info
+        # The environment now correctly returns STATE_DIM (49) + 4 stacked depth frames
+        return self.net(obs)
 
 
 def make_env():
-    return A1MujocoEnv(use_depth=False)
+    return A1MujocoEnv(use_depth=True)
 
 
 def find_model_path(args):

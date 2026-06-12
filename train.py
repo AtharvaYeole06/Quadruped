@@ -66,21 +66,12 @@ class LocoTransformerExtractor(BaseFeaturesExtractor):
         )
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
-        state = obs[:, :STATE_DIM]
-        depth_flat = obs[:, STATE_DIM:]
-
-        depth_img = depth_flat.view(-1, 1, IMG_HEIGHT, IMG_WIDTH)
-        depth_img = depth_img.expand(-1, 4, -1, -1)
-
-        visual_flat = depth_img.reshape(-1, 4 * IMG_HEIGHT * IMG_WIDTH)
-        x = torch.cat([state, visual_flat], dim=-1)
-
-        return self.net(x)
+        return self.net(obs)
 
 
 if __name__ == "__main__":
     num_envs = 8
-    TOTAL_TIMESTEPS = 2_000_000
+    TOTAL_TIMESTEPS = 10_000_000
     CHECKPOINT_DIR = "./checkpoints/"
     VECNORM_PATH = "vec_normalize.pkl"
 
@@ -106,12 +97,12 @@ if __name__ == "__main__":
         policy_kwargs=policy_kwargs,
         verbose=1,
         device="mps",
-        n_steps=1024,  # 1024 * 16 = 16k buffer
+        n_steps=2048,  # 2048 * 8 = 16k buffer
         batch_size=4096,
-        n_epochs=5,
-        learning_rate=linear_schedule(1e-4),
-        clip_range=0.1,
-        ent_coef=0.01,
+        n_epochs=10,
+        learning_rate=linear_schedule(3e-4),
+        clip_range=0.2,
+        ent_coef=0.0,
         gamma=0.99,
         gae_lambda=0.95,
         tensorboard_log="./logs_transformer/",
@@ -123,10 +114,6 @@ if __name__ == "__main__":
         save_path=CHECKPOINT_DIR,
         name_prefix="a1_loco",
     )
-
-    print(f"\n{'=' * 60}")
-    print(f"  LocoTransformer — Torque Control — {num_envs} envs (DummyVecEnv)")
-    print(f"{'=' * 60}\n")
 
     model.learn(
         total_timesteps=TOTAL_TIMESTEPS,

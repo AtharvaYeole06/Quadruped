@@ -25,9 +25,9 @@ INIT_POSITION = [0, 0, 0.32]
 INIT_MOTOR_ANGLES = np.array([0, 0.9, -1.8] * 4)
 MAX_TORQUE = 33.5  # A1 motor torque limit (Nm)
 
-# PD gains (used ONLY during Reset to settle into standing pose)
+# PD gains for resetting the robot to a standing pose
 _RESET_KP = np.array([80.0] * 12)
-_RESET_KD = np.array([0.4] * 12)
+_RESET_KD = np.array([1.0] * 12)
 
 SCENE_XML = os.path.join(
     os.path.dirname(__file__), "../assets/unitree_go1/scene_torque.xml"
@@ -55,6 +55,7 @@ class A1Mujoco:
         self._joint_states = []
         self._base_position = np.zeros(3)
         self._base_orientation = np.array([0, 0, 0, 1.0])
+        self._last_action = np.zeros(NUM_MOTORS)
 
         self.Reset()
 
@@ -93,7 +94,7 @@ class A1Mujoco:
 
         mujoco.mj_forward(self._model, self._data)
 
-        # Settle with PD control (only during reset, not during training)
+        # Settle robot into standing pose using PD control
         for _ in range(500):
             q = np.array([self._data.qpos[7 + jid] for jid in self._motor_id_list])
             qdot = np.array([self._data.qvel[6 + jid] for jid in self._motor_id_list])
@@ -105,9 +106,11 @@ class A1Mujoco:
 
         self._is_safe = True
         self._step_counter = 0
+        self._last_action = np.zeros(NUM_MOTORS)
         self.ReceiveObservation()
 
     def Step(self, action):
+        self._last_action = action.copy()
         for _ in range(self._action_repeat):
             self.ApplyAction(action)
             mujoco.mj_step(self._model, self._data)
@@ -115,7 +118,11 @@ class A1Mujoco:
         self.ReceiveObservation()
 
     def ApplyAction(self, torques):
-        """Direct torque control — action IS the torque (already scaled by env)."""
+        """Apply raw motor torques.
+        
+        Args:
+            torques: Array of torques in Nm to apply to the motors.
+        """
         clipped = np.clip(torques, -MAX_TORQUE, MAX_TORQUE)
         for i, jid in enumerate(self._motor_id_list):
             self._data.ctrl[jid] = clipped[i]
@@ -185,6 +192,9 @@ class A1Mujoco:
 
     def GetTimeSinceReset(self):
         return self._step_counter * self.time_step
+        
+    def GetLastAction(self):
+        return self._last_action.copy()
 
     def Terminate(self):
         pass
