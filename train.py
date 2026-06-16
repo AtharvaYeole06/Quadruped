@@ -1,6 +1,5 @@
 import sys
 import os
-import glob
 from typing import Callable
 
 import torch
@@ -70,13 +69,15 @@ class LocoTransformerExtractor(BaseFeaturesExtractor):
 
 
 if __name__ == "__main__":
-    num_envs = 8
+    num_envs = 10
     TOTAL_TIMESTEPS = 25_000_000
     CHECKPOINT_DIR = "./checkpoints/"
     VECNORM_PATH = "vec_normalize.pkl"
 
     from stable_baselines3.common.vec_env import SubprocVecEnv
+
     env = SubprocVecEnv([make_env for _ in range(num_envs)], start_method="spawn")
+
     env = VecNormalize(
         env,
         norm_obs=True,
@@ -98,11 +99,12 @@ if __name__ == "__main__":
         policy_kwargs=policy_kwargs,
         verbose=1,
         device="mps",
-        n_steps=2048,  # 2048 * 8 = 16k buffer
-        batch_size=4096,
+        n_steps=2048,  # 2048 * 10 = 20480 buffer
+        batch_size=5120,
         n_epochs=10,
         learning_rate=linear_schedule(1e-4),
         clip_range=0.2,
+        target_kl=0.025,
         ent_coef=0.0,
         gamma=0.99,
         gae_lambda=0.95,
@@ -114,6 +116,7 @@ if __name__ == "__main__":
         save_freq=max(500_000 // num_envs, 1),
         save_path=CHECKPOINT_DIR,
         name_prefix="a1_loco",
+        save_vecnormalize=True,
     )
 
     model.learn(

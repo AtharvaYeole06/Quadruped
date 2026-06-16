@@ -920,8 +920,6 @@ class LocoTransformer(nn.Module):
             # Learnable CLS token to replace mean pooling
         self.cls_token = nn.Parameter(torch.zeros(1, 1, self.encoder.visual_dim))
         nn.init.normal_(self.cls_token, std=0.02)
-        
-        self.pos_embedding = nn.Parameter(torch.randn(200, 1, self.encoder.visual_dim) * 0.02)
 
         self.visual_append_fcs = []
         visual_append_input_shape = visual_append_input_shape * 2
@@ -956,9 +954,6 @@ class LocoTransformer(nn.Module):
         batch_size = visual_out.shape[1]
         cls = self.cls_token.expand(1, batch_size, -1)
         out = torch.cat([cls, visual_out], dim=0)
-        
-        out = out + self.pos_embedding[:out.size(0)]
-        
         if self.token_norm:
             out = self.token_ln(out)
         if not self.use_pytorch_encoder:
