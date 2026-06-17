@@ -3,11 +3,9 @@ import os
 from typing import Callable
 
 import torch
-import torch.nn as nn
-import numpy as np
 
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from stable_baselines3.common.vec_env import VecNormalize
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
@@ -16,7 +14,7 @@ import gymnasium as gym
 # Path injection
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 if CURRENT_DIR not in sys.path:
-    sys.path.insert(0, CURRENT_DIR)
+sys.path.insert(0, CURRENT_DIR)
 
 from vision4leg.envs.a1_mujoco_env import (
     A1MujocoEnv,
@@ -38,7 +36,7 @@ def linear_schedule(initial_value: float) -> Callable[[float], float]:
 
 def make_env():
     """Create env WITH depth. Requires DummyVecEnv on Mac to avoid OpenGL context crashes."""
-    return Monitor(A1MujocoEnv(use_depth=True))
+    return Monitor(A1MujocoEnv(use_depth=True, control_mode="position"))
 
 
 class LocoTransformerExtractor(BaseFeaturesExtractor):

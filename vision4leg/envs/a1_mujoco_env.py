@@ -3,25 +3,27 @@ from gymnasium import spaces
 import numpy as np
 import mujoco
 from collections import deque
-from vision4leg.robots.a1_mujoco import A1Mujoco, MAX_TORQUE
+from vision4leg.robots.a1_mujoco import A1Mujoco, MAX_TORQUE, INIT_MOTOR_ANGLES
 
 IMG_HEIGHT = 64
 IMG_WIDTH = 64
 STATE_DIM = 50  # 12 pos + 12 vel + 3 RPY + 3 RPY_rate + 3 base_vel + 4 foot_contact + 12 prev_action + 1 target_vel
 VISUAL_DIM = 4 * IMG_HEIGHT * IMG_WIDTH
 
-TORQUE_SCALE = MAX_TORQUE  # Network outputs [-1,1] → [-33.5, 33.5] Nm
+TORQUE_SCALE = MAX_TORQUE  # For torque mode: [-1,1] → [-33.5, 33.5] Nm
+ACTION_SCALE = 0.25         # For position mode: [-1,1] → ±0.25 rad offset
 MAX_EPISODE_STEPS = 1000
 
 
 class A1MujocoEnv(gym.Env):
-    """Gymnasium env for A1 locomotion with depth camera + torque control."""
+    """Gymnasium env for A1 locomotion with depth camera."""
 
-    def __init__(self, render_mode=None, use_depth=True):
+    def __init__(self, render_mode=None, use_depth=True, control_mode="torque"):
         super().__init__()
         self.render_mode = render_mode
         self.use_depth = use_depth
-        self._robot = A1Mujoco(action_repeat=10)  # 100 Hz control for torque stability
+        self.control_mode = control_mode
+        self._robot = A1Mujoco(action_repeat=10, control_mode=control_mode)
         self.target_velocity = 0.0
 
         # Depth camera
@@ -31,12 +33,12 @@ class A1MujocoEnv(gym.Env):
             )
             self._renderer.enable_depth_rendering()
 
-        # Action: 12 normalized torques [-1, 1]
+        # Action: 12 normalized values [-1, 1]
         self.action_space = spaces.Box(
             low=-1.0, high=1.0, shape=(12,), dtype=np.float32
         )
 
-        # Obs: state(33) + depth(64×64)
+        # Obs: state(50) + depth(4×64×64)
         obs_dim = STATE_DIM + VISUAL_DIM if use_depth else STATE_DIM
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32
@@ -69,8 +71,12 @@ class A1MujocoEnv(gym.Env):
         return self._get_obs(), {}
 
     def step(self, action):
-        torques = action * TORQUE_SCALE
-        self._robot.Step(torques)
+        if self.control_mode == "torque":
+            motor_command = action * TORQUE_SCALE
+        else:
+            motor_command = INIT_MOTOR_ANGLES + action * ACTION_SCALE
+
+        self._robot.Step(motor_command)
 
         if self.use_depth:
             self.frame_stack.append(self._get_depth())
@@ -122,51 +128,37 @@ class A1MujocoEnv(gym.Env):
         rpy_rate = self._robot.GetBaseRollPitchYawRate()
         torques = self._robot.GetMotorTorques()
         joint_vel = self._robot.GetMotorVelocities()
-
         base_height = self._robot._data.qpos[2]
 
-        # checks forward moving of robot
         lin_vel_err = np.square(base_vel[0] - self.target_velocity)
-        reward_lin_vel = np.exp(-lin_vel_err / 0.1)
+        reward_lin_vel = np.exp(-lin_vel_err / 0.1) * 2.0
+        survival_bonus = 0.5
 
-        # penalty for moving sideways
-        lat_vel_err = np.square(base_vel[1])
-        reward_lat_vel = np.exp(-lat_vel_err / 0.1)
-
-        # reward for not spinning
-        yaw_rate_err = np.square(rpy_rate[2])
-        reward_yaw_rate = np.exp(-yaw_rate_err / 0.1)
-
-        # reward for being at a cetain height and walking rather than crouching
+        penalty_lat_vel = np.square(base_vel[1]) * 1.5
+        penalty_yaw_rate = np.square(rpy_rate[2]) * 0.5
+        penalty_z_vel = np.square(base_vel[2]) * 2.0
+        penalty_wobble = (np.square(rpy_rate[0]) + np.square(rpy_rate[1])) * 0.5
+        
         height_err = np.square(base_height - 0.3)
-        reward_base_height = np.exp(-height_err / 0.05)  # Relaxed from 0.01
+        penalty_height = height_err * 10.0
+        penalty_posture = (np.square(rpy[0]) + np.square(rpy[1])) * 3.0
 
-        # reward for having proper posture rahter than being on its back
-        posture_err = np.square(rpy[0]) + np.square(rpy[1])
-        reward_posture = np.exp(-posture_err / 0.1)
-
-        # penalty for having sudden changes in torque and jerk movement of legs
-        torque_penalty = np.sum(np.square(torques)) * 0.00002
-        action_rate_penalty = np.sum(np.square(action - self._last_action)) * 0.01
-
-        # penalty for vibrating legs (high joint velocity)
+        torque_penalty = np.sum(np.square(torques)) * 0.00005
+        action_rate_penalty = np.sum(np.square(action - self._last_action)) * 0.05
         joint_vel_penalty = np.sum(np.square(joint_vel)) * 0.0005
 
-        z_vel_penalty = np.square(base_vel[2]) * 0.5
-        wobble_penalty = (np.square(rpy_rate[0]) + np.square(rpy_rate[1])) * 0.1
-
         reward = (
-            1.0 * reward_lin_vel
-            + 0.8 * reward_lat_vel  # Strict lateral penalty
-            + 0.8 * reward_yaw_rate  # Strict yaw penalty
-            + 0.1 * reward_base_height
-            + 0.5 * reward_posture
-            + 2.0  # Survival Bonus
+            reward_lin_vel
+            + survival_bonus
+            - penalty_lat_vel
+            - penalty_yaw_rate
+            - penalty_z_vel
+            - penalty_wobble
+            - penalty_height
+            - penalty_posture
             - torque_penalty
             - action_rate_penalty
             - joint_vel_penalty
-            - z_vel_penalty
-            - wobble_penalty
         )
         return float(reward)
 

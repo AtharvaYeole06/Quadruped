@@ -25,26 +25,40 @@ INIT_POSITION = [0, 0, 0.32]
 INIT_MOTOR_ANGLES = np.array([0, 0.9, -1.8] * 4)
 MAX_TORQUE = 33.5  # A1 motor torque limit (Nm)
 
+# Joint limits from MJCF (abduction, hip, knee) × 4 legs
+JOINT_LOWER = np.array([-0.863, -0.686, -2.818] * 4)
+JOINT_UPPER = np.array([ 0.863,  4.501, -0.888] * 4)
+
 # PD gains for resetting the robot to a standing pose
 _RESET_KP = np.array([80.0] * 12)
 _RESET_KD = np.array([1.0] * 12)
 
-SCENE_XML = os.path.join(
-    os.path.dirname(__file__), "../assets/unitree_go1/scene_torque.xml"
-)
+_ASSET_DIR = os.path.join(os.path.dirname(__file__), "../assets/unitree_go1")
+SCENE_TORQUE_XML = os.path.join(_ASSET_DIR, "scene_torque.xml")
+SCENE_POSITION_XML = os.path.join(_ASSET_DIR, "scene_position.xml")
 
 
 class A1Mujoco:
-    """A1 quadruped simulated in MuJoCo with direct torque control."""
+    """A1 quadruped simulated in MuJoCo."""
 
-    def __init__(self, time_step=0.001, action_repeat=1, on_rack=False, sensors=None):
+    def __init__(self, time_step=0.001, action_repeat=1, on_rack=False,
+                 sensors=None, control_mode="torque"):
         self.time_step = time_step
         self._action_repeat = action_repeat
         self._on_rack = on_rack
         self._sensors = sensors or []
         self.num_motors = NUM_MOTORS
+        self.control_mode = control_mode
 
-        self._model = mujoco.MjModel.from_xml_path(SCENE_XML)
+        if control_mode == "torque":
+            scene_xml = SCENE_TORQUE_XML
+        elif control_mode == "position":
+            scene_xml = SCENE_POSITION_XML
+        else:
+            raise ValueError(f"Unknown control_mode: {control_mode!r}. "
+                             f"Use 'torque' or 'position'.")
+
+        self._model = mujoco.MjModel.from_xml_path(scene_xml)
         self._data = mujoco.MjData(self._model)
 
         self._motor_id_list = self._build_motor_id_list()
@@ -98,10 +112,16 @@ class A1Mujoco:
         for _ in range(500):
             q = np.array([self._data.qpos[7 + jid] for jid in self._motor_id_list])
             qdot = np.array([self._data.qvel[6 + jid] for jid in self._motor_id_list])
-            torques = _RESET_KP * (INIT_MOTOR_ANGLES - q) + _RESET_KD * (0.0 - qdot)
-            torques = np.clip(torques, -MAX_TORQUE, MAX_TORQUE)
-            for i, jid in enumerate(self._motor_id_list):
-                self._data.ctrl[jid] = torques[i]
+
+            if self.control_mode == "torque":
+                torques = _RESET_KP * (INIT_MOTOR_ANGLES - q) + _RESET_KD * (0.0 - qdot)
+                torques = np.clip(torques, -MAX_TORQUE, MAX_TORQUE)
+                for i, jid in enumerate(self._motor_id_list):
+                    self._data.ctrl[jid] = torques[i]
+            else:
+                for i, jid in enumerate(self._motor_id_list):
+                    self._data.ctrl[jid] = INIT_MOTOR_ANGLES[i]
+
             mujoco.mj_step(self._model, self._data)
 
         self._is_safe = True
@@ -117,13 +137,12 @@ class A1Mujoco:
             self._step_counter += 1
         self.ReceiveObservation()
 
-    def ApplyAction(self, torques):
-        """Apply raw motor torques.
-        
-        Args:
-            torques: Array of torques in Nm to apply to the motors.
-        """
-        clipped = np.clip(torques, -MAX_TORQUE, MAX_TORQUE)
+    def ApplyAction(self, action):
+        if self.control_mode == "torque":
+            clipped = np.clip(action, -MAX_TORQUE, MAX_TORQUE)
+        else:
+            clipped = np.clip(action, JOINT_LOWER, JOINT_UPPER)
+
         for i, jid in enumerate(self._motor_id_list):
             self._data.ctrl[jid] = clipped[i]
 

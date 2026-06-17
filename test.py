@@ -53,8 +53,8 @@ class LocoTransformerExtractor(BaseFeaturesExtractor):
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
         return self.net(obs)
 
-def make_env():
-    return A1MujocoEnv(use_depth=True)
+def make_env(control_mode="torque"):
+    return A1MujocoEnv(use_depth=True, control_mode=control_mode)
 
 def find_model_path(args):
     if args.checkpoint:
@@ -83,6 +83,8 @@ def main():
     parser.add_argument("--checkpoint", type=str)
     parser.add_argument("--slow", action="store_true")
     parser.add_argument("--fast", action="store_true")
+    parser.add_argument("--mode", type=str, default="position", choices=["position", "torque"], 
+                        help="Control mode the checkpoint was trained with")
     args = parser.parse_args()
 
     SIM_DT = 0.02
@@ -93,7 +95,8 @@ def main():
     else:
         playback_dt = SIM_DT
 
-    env = DummyVecEnv([make_env])
+    # Pass the mode to make_env
+    env = DummyVecEnv([lambda: make_env(control_mode=args.mode)])
 
     norm_path = os.path.join(CURRENT_DIR, "vec_normalize.pkl")
     if os.path.exists(norm_path):
