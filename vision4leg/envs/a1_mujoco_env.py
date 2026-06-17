@@ -57,7 +57,7 @@ class A1MujocoEnv(gym.Env):
         if options and "target_vel" in options:
             self.target_velocity = options["target_vel"]
         else:
-            self.target_velocity = np.random.uniform(0.0, 1.0)
+            self.target_velocity = np.random.uniform(0.4, 1.0)
 
         self._robot.Reset()
         self._last_action = np.zeros(12)
@@ -131,8 +131,7 @@ class A1MujocoEnv(gym.Env):
         base_height = self._robot._data.qpos[2]
 
         lin_vel_err = np.square(base_vel[0] - self.target_velocity)
-        reward_lin_vel = np.exp(-lin_vel_err / 0.1) * 2.0
-        survival_bonus = 0.5
+        reward_lin_vel = np.exp(-lin_vel_err / 0.25) * 2.0
 
         penalty_lat_vel = np.square(base_vel[1]) * 1.5
         penalty_yaw_rate = np.square(rpy_rate[2]) * 0.5
@@ -140,25 +139,26 @@ class A1MujocoEnv(gym.Env):
         penalty_wobble = (np.square(rpy_rate[0]) + np.square(rpy_rate[1])) * 0.5
         
         height_err = np.square(base_height - 0.3)
-        penalty_height = height_err * 10.0
-        penalty_posture = (np.square(rpy[0]) + np.square(rpy[1])) * 3.0
+        penalty_height = height_err * 2.0
 
         torque_penalty = np.sum(np.square(torques)) * 0.00005
-        action_rate_penalty = np.sum(np.square(action - self._last_action)) * 0.05
+        action_rate_penalty = np.sum(np.square(action - self._last_action)) * 0.01
         joint_vel_penalty = np.sum(np.square(joint_vel)) * 0.0005
+        
+        dof_pos_err = np.sum(np.abs(self._robot.GetMotorAngles() - INIT_MOTOR_ANGLES))
+        penalty_dof_pos = dof_pos_err * 0.1
 
         reward = (
             reward_lin_vel
-            + survival_bonus
             - penalty_lat_vel
             - penalty_yaw_rate
             - penalty_z_vel
             - penalty_wobble
             - penalty_height
-            - penalty_posture
             - torque_penalty
             - action_rate_penalty
             - joint_vel_penalty
+            - penalty_dof_pos
         )
         return float(reward)
 

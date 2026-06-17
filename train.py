@@ -14,7 +14,7 @@ import gymnasium as gym
 # Path injection
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 if CURRENT_DIR not in sys.path:
-sys.path.insert(0, CURRENT_DIR)
+    sys.path.insert(0, CURRENT_DIR)
 
 from vision4leg.envs.a1_mujoco_env import (
     A1MujocoEnv,
